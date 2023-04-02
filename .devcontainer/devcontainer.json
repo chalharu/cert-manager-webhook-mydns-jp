@@ -31,8 +31,7 @@
 			"installDockerBuildx": true,
 			"version": "latest",
 			"dockerDashComposeVersion": "v2"
-		},
-		"./local-features/copy-kube-config": {}
+		}
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
