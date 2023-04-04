@@ -1,12 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/cert-manager/cert-manager/test/acme/dns"
-
-	"github.com/cert-manager/webhook-example/example"
 )
 
 var (
@@ -26,16 +25,18 @@ func TestRunsSuite(t *testing.T) {
 	//	dns.SetManifestPath("testdata/my-custom-solver"),
 	//	dns.SetBinariesPath("_test/kubebuilder/bin"),
 	//)
-	solver := example.New("59351")
+	fmt.Printf("Zone: %v\n", zone)
+	solver := &customDNSProviderSolver{}
 	fixture := dns.NewFixture(solver,
-		dns.SetResolvedZone("example.com."),
-		dns.SetManifestPath("testdata/my-custom-solver"),
-		dns.SetDNSServer("127.0.0.1:59351"),
+		// dns.SetDNSName(zone),
+		dns.SetResolvedZone(zone),
+		dns.SetResolvedFQDN(fmt.Sprintf("_acme-challenge.%s", zone)),
+		dns.SetManifestPath("testdata/mydns-solver"),
+		dns.SetDNSServer("210.197.74.200:53"),
 		dns.SetUseAuthoritative(false),
 	)
 	//need to uncomment and  RunConformance delete runBasic and runExtended once https://github.com/cert-manager/cert-manager/pull/4835 is merged
 	//fixture.RunConformance(t)
 	fixture.RunBasic(t)
 	fixture.RunExtended(t)
-
 }

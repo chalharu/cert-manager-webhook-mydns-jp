@@ -1,4 +1,4 @@
-module github.com/cert-manager/webhook-example
+module github.com/chalharu/cert-manager-webhook-mydns-jp
 
 go 1.19
 

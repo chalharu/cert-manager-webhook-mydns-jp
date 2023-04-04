@@ -1,15 +1,24 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
 
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
+	cm "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	"github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -40,7 +49,7 @@ type customDNSProviderSolver struct {
 	// 3. uncomment the relevant code in the Initialize method below
 	// 4. ensure your webhook's service account has the required RBAC role
 	//    assigned to it for interacting with the Kubernetes APIs you need.
-	//client kubernetes.Clientset
+	client *kubernetes.Clientset
 }
 
 // customDNSProviderConfig is a structure that is used to decode into when
@@ -65,6 +74,50 @@ type customDNSProviderConfig struct {
 
 	//Email           string `json:"email"`
 	//APIKeySecretRef v1alpha1.SecretKeySelector `json:"apiKeySecretRef"`
+	MasterIdSecretRef       cm.SecretKeySelector `json:"masterIdSecretRef"`
+	MasterPasswordSecretRef cm.SecretKeySelector `json:"masterPasswordSecretRef"`
+
+	MasterId       string `json:"masterId"`
+	MasterPassword string `json:"masterPassword"`
+}
+
+func (c *customDNSProviderSolver) extractFromSecret(ch *v1alpha1.ChallengeRequest, sks *cm.SecretKeySelector) (string, error) {
+	sec, err := c.client.CoreV1().
+		Secrets(ch.ResourceNamespace).
+		Get(context.TODO(), sks.LocalObjectReference.Name, metaV1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	secBytes, ok := sec.Data[sks.Key]
+	if !ok {
+		return "", fmt.Errorf("key %q not found in secret \"%s/%s\"",
+			sks.Key,
+			sks.LocalObjectReference.Name,
+			ch.ResourceNamespace)
+	}
+
+	return string(secBytes), nil
+}
+
+func (c *customDNSProviderSolver) extractAuthFromSecret(cfg *customDNSProviderConfig, ch *v1alpha1.ChallengeRequest) error {
+	if cfg.MasterId == "" {
+		sec, err := c.extractFromSecret(ch, &cfg.MasterIdSecretRef)
+		if err != nil {
+			return err
+		}
+		cfg.MasterId = sec
+	}
+
+	if cfg.MasterPassword == "" {
+		sec, err := c.extractFromSecret(ch, &cfg.MasterPasswordSecretRef)
+		if err != nil {
+			return err
+		}
+		cfg.MasterPassword = sec
+	}
+
+	return nil
 }
 
 // Name is used as the name for this DNS solver when referencing it on the ACME
@@ -74,7 +127,7 @@ type customDNSProviderConfig struct {
 // within a single webhook deployment**.
 // For example, `cloudflare` may be used as the name of a solver.
 func (c *customDNSProviderSolver) Name() string {
-	return "my-custom-solver"
+	return "mydns-solver"
 }
 
 // Present is responsible for actually presenting the DNS record with the
@@ -83,16 +136,7 @@ func (c *customDNSProviderSolver) Name() string {
 // cert-manager itself will later perform a self check to ensure that the
 // solver has correctly configured the DNS provider.
 func (c *customDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
-	cfg, err := loadConfig(ch.Config)
-	if err != nil {
-		return err
-	}
-
-	// TODO: do something more useful with the decoded configuration
-	fmt.Printf("Decoded configuration %v", cfg)
-
-	// TODO: add code that sets a record in the DNS provider's console
-	return nil
+	return c.mydnsDirectEdit("REGIST", ch)
 }
 
 // CleanUp should delete the relevant TXT record from the DNS provider console.
@@ -102,8 +146,7 @@ func (c *customDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 // This is in order to facilitate multiple DNS validations for the same domain
 // concurrently.
 func (c *customDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
-	// TODO: add code that deletes a record from the DNS provider's console
-	return nil
+	return c.mydnsDirectEdit("DELETE", ch)
 }
 
 // Initialize will be called when the webhook first starts.
@@ -119,12 +162,12 @@ func (c *customDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stop
 	///// UNCOMMENT THE BELOW CODE TO MAKE A KUBERNETES CLIENTSET AVAILABLE TO
 	///// YOUR CUSTOM DNS PROVIDER
 
-	//cl, err := kubernetes.NewForConfig(kubeClientConfig)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//c.client = cl
+	cl, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return err
+	}
+
+	c.client = cl
 
 	///// END OF CODE TO MAKE KUBERNETES CLIENTSET AVAILABLE
 	return nil
@@ -143,4 +186,57 @@ func loadConfig(cfgJSON *extapi.JSON) (customDNSProviderConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func (c *customDNSProviderSolver) mydnsDirectEdit(command string, ch *v1alpha1.ChallengeRequest) error {
+	cfg, err := loadConfig(ch.Config)
+	if err != nil {
+		return err
+	}
+
+	if err := c.extractAuthFromSecret(&cfg, ch); err != nil {
+		return err
+	}
+
+	domain := util.UnFqdn(strings.SplitN(ch.ResolvedFQDN, ".", 2)[1])
+
+	fmt.Printf("Domain: %s\n", domain)
+	fmt.Printf("Key: %s\n", ch.Key)
+
+	postData := url.Values{}
+	postData.Add("CERTBOT_DOMAIN", domain)
+	postData.Add("CERTBOT_VALIDATION", ch.Key)
+	postData.Add("EDIT_CMD", command)
+
+	fmt.Printf("RequestBody: %s\n", string(postData.Encode()))
+
+	req, err := http.NewRequest(http.MethodPost, "https://www.mydns.jp/directedit.html", strings.NewReader(postData.Encode()))
+	if err != nil {
+		return fmt.Errorf("invalid request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(cfg.MasterId, cfg.MasterPassword)
+	fmt.Printf("req: %+v\n", req)
+
+	client := http.Client{}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		var content []byte
+		content, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		return fmt.Errorf("request %s failed [status code %d]: %s", req.URL, resp.StatusCode, string(content))
+	}
+
+	return nil
 }
