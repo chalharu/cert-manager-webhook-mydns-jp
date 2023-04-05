@@ -1,0 +1,11 @@
+.gitignore
+.dockerignore
+Dockerfile
+LICENSE
+README.md
+testdata/
+deploy/
+.vscode/
+.devcontainer/
+Makefile
+.github/
