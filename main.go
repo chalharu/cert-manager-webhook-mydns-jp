@@ -228,13 +228,13 @@ func (c *customDNSProviderSolver) mydnsDirectEdit(command string, ch *v1alpha1.C
 
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= http.StatusBadRequest {
-		var content []byte
-		content, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
+	var content []byte
+	content, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
 
+	if resp.StatusCode >= http.StatusBadRequest || !strings.Contains(string(content), "Login and Direct edit OK.") {
 		return fmt.Errorf("request %s failed [status code %d]: %s", req.URL, resp.StatusCode, string(content))
 	}
 

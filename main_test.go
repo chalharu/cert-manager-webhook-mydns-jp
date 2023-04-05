@@ -31,6 +31,7 @@ func TestRunsSuite(t *testing.T) {
 		// dns.SetDNSName(zone),
 		dns.SetResolvedZone(zone),
 		dns.SetResolvedFQDN(fmt.Sprintf("_acme-challenge.%s", zone)),
+		dns.SetDNSChallengeKey("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"),
 		dns.SetManifestPath("testdata/mydns-solver"),
 		dns.SetDNSServer("210.197.74.200:53"),
 		dns.SetUseAuthoritative(false),
